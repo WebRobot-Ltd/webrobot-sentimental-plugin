@@ -1,0 +1,59 @@
+{
+  "pluginId": "sentimental-plugin",
+  "version": "0.1.0",
+  "pluginType": "both",
+  "displayName": "Sentiment Analysis Plugin",
+  "description": "LLM-powered sentiment analysis: ETL stages for pipeline integration and REST API endpoints for on-demand analysis and result querying.",
+  "mainClass": "eu.webrobot.sentiment.SentimentPlugin",
+  "bootstrapMethod": "bootstrap",
+  "enabled": true,
+  "organizationIds": [],
+  "stages": [
+    {
+      "stage_name": "sentiment_analyze",
+      "description": "Analyzes the sentiment of a text field using an LLM. Adds sentiment_label (positive/negative/neutral) and sentiment_score (0.0–1.0) to each row.",
+      "extensionType": "stage",
+      "arg_schema": [
+        { "name": "text_field",  "type": "string",  "required": true,  "description": "Name of the field containing the text to analyze" },
+        { "name": "model",       "type": "string",  "required": false, "default": "default", "description": "LLM provider alias (default: platform default)" },
+        { "name": "save_result", "type": "boolean", "required": false, "default": "false",   "description": "If true, persists result to sentiment_results table" },
+        { "name": "entity_type", "type": "string",  "required": false, "default": "",        "description": "Entity type label for DB storage (e.g. 'product', 'review')" }
+      ]
+    },
+    {
+      "stage_name": "sentiment_filter",
+      "description": "Filters rows by sentiment_label or minimum sentiment_score.",
+      "extensionType": "stage",
+      "arg_schema": [
+        { "name": "label",     "type": "string", "required": false, "default": "",  "description": "Keep only rows with this label (positive/negative/neutral). Empty = no label filter." },
+        { "name": "min_score", "type": "number", "required": false, "default": "0", "description": "Minimum sentiment_score to keep (0.0–1.0)" }
+      ]
+    },
+    {
+      "stage_name": "sentiment_load",
+      "description": "Source stage: loads stored sentiment results from DB for a given entity type.",
+      "extensionType": "stage",
+      "arg_schema": [
+        { "name": "entity_type", "type": "string",  "required": true,  "description": "Entity type to load (e.g. 'product', 'review')" },
+        { "name": "label",       "type": "string",  "required": false, "default": "", "description": "Filter by sentiment label. Empty = all." },
+        { "name": "limit",       "type": "integer", "required": false, "default": "1000" }
+      ]
+    },
+    {
+      "stage_name": "sentiment_save",
+      "description": "Sink stage: persists sentiment result to DB. Upserts by (org_id, entity_id, entity_type).",
+      "extensionType": "stage",
+      "arg_schema": [
+        { "name": "entity_id_field",   "type": "string", "required": true,  "description": "Field containing the entity ID" },
+        { "name": "entity_type",       "type": "string", "required": true,  "description": "Entity type label" },
+        { "name": "text_field",        "type": "string", "required": false, "default": "text" },
+        { "name": "label_field",       "type": "string", "required": false, "default": "sentiment_label" },
+        { "name": "score_field",       "type": "string", "required": false, "default": "sentiment_score" }
+      ]
+    }
+  ],
+  "dbMigrations": {
+    "enabled": true,
+    "location": "db/migration/sentiment"
+  }
+}
