@@ -18,6 +18,8 @@ import java.time.{Instant, OffsetDateTime, ZoneOffset}
  * and replace child rows so that re-analysis of the same text overwrites previous result.
  */
 class SentimentSaveStage extends WSinkStage {
+  import SentimentSaveStage.TapOps
+
 
   override def name: String = "sentiment_save"
 
@@ -240,8 +242,11 @@ class SentimentSaveStage extends WSinkStage {
   }
 
   private def nullIfEmpty(s: String): String = if (s == null || s.isEmpty) null else s
+}
 
-  private implicit class TapOps[A](val a: A) extends AnyVal {
+object SentimentSaveStage {
+  // Top-level value class avoids "value class may not be a member of another class"
+  implicit class TapOps[A](val a: A) extends AnyVal {
     def tap(f: A => Unit): A = { f(a); a }
   }
 }

@@ -27,7 +27,13 @@
         <dependency>
             <groupId>com.github.WebRobot-Ltd</groupId>
             <artifactId>webrobot-jersey-plugin-sdk</artifactId>
-            <version>v0.1.0</version>
+            <version>v0.2.0</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>javax.servlet</groupId>
+            <artifactId>javax.servlet-api</artifactId>
+            <version>4.0.1</version>
             <scope>provided</scope>
         </dependency>
         <dependency>

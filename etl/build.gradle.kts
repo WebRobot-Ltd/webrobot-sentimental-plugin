@@ -6,24 +6,23 @@ plugins {
 group   = "eu.webrobot.plugins"
 version = "0.1.0"
 
-repositories {
-    mavenCentral()
-    maven {
-        name = "GitHubPackages"
-        url  = uri("https://maven.pkg.github.com/WebRobot-Ltd/webrobot-plugin-sdk")
-        credentials {
-            username = System.getenv("GITHUB_ACTOR") ?: "webroboteu"
-            password = System.getenv("GITHUB_TOKEN")
-                ?: throw GradleException("GITHUB_TOKEN env var required to download webrobot-plugin-sdk")
-        }
+java {
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(17))
     }
 }
 
-val scalaV     = "2.12"
-val scalaFullV = "2.12.18"
+repositories {
+    mavenCentral()
+    maven { url = uri("https://jitpack.io") }
+}
+
+val scalaV     = "2.13"
+val scalaFullV = "2.13.12"
 
 dependencies {
-    compileOnly("eu.webrobot:webrobot-plugin-sdk:latest.release")
+    // Public Plugin SDK via JitPack — partners need no auth to fetch
+    compileOnly("com.github.WebRobot-Ltd:webrobot-plugin-sdk:v0.2.1")
     compileOnly("org.scala-lang:scala-library:$scalaFullV")
 
     testImplementation("org.scalatest:scalatest_$scalaV:3.2.18")

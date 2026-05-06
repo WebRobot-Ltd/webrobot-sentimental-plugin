@@ -1,0 +1,21 @@
+# Build outputs
+build/
+target/
+*.class
+*.jar
+
+# Gradle
+.gradle/
+gradle-app.setting
+
+# Maven
+dependency-reduced-pom.xml
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
