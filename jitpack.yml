@@ -1,0 +1,9 @@
+jdk:
+  - openjdk17
+
+# JitPack runs `mvn install` from the repo root. The parent pom (pom.xml)
+# aggregates the Maven submodules: api/ and cli/. The Gradle-based etl/
+# module is excluded — partners consume the ETL plugin as a JAR uploaded
+# to the platform plugin registry, not via JitPack.
+install:
+  - mvn -B -ntp -DskipTests install
