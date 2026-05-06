@@ -1,1 +1,2 @@
 eu.webrobot.sentiment.stages.SentimentLoadStage
+eu.webrobot.sentiment.stages.SentimentRefreshAggregatesStage

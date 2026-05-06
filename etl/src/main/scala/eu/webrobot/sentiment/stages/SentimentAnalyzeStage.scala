@@ -1,58 +1,74 @@
 package eu.webrobot.sentiment.stages
 
 import eu.webrobot.plugin.sdk.{WArgs, WRow, WTransformStage, WebroStageContext}
+import eu.webrobot.sentiment.{JsonMini, SentimentLlm}
 
+/**
+ * Enriches a row with full sentiment analysis output via a single LLM call.
+ *
+ * Adds these fields to the row (ready to be persisted by sentiment_save):
+ *   - sentiment_polarity      : Double  (-1.0..+1.0)
+ *   - sentiment_label         : String  (positive|negative|neutral)
+ *   - sentiment_confidence    : Double  (0.0..1.0)
+ *   - sentiment_language      : String  (ISO-639-1)
+ *   - sentiment_emotions_json : JSON string {emotion -> score}
+ *   - sentiment_entities_json : JSON string [ {text, type, start, end} ]
+ *   - sentiment_aspects_json  : JSON string [ {entity_text, polarity, span} ]
+ *   - sentiment_raw_response  : String — original LLM payload (audit trail)
+ *   - sentiment_model_used    : String
+ */
 class SentimentAnalyzeStage extends WTransformStage {
 
   override def name: String = "sentiment_analyze"
 
   override def transform(row: WRow, args: WArgs, ctx: WebroStageContext): WRow = {
-    val textField  = args.string(0, "text")
-    val model      = args.string(1, "default")
-    val saveResult = args.bool(2, false)
-    val entityType = args.string(3, "")
+    val textField = args.string(0, "text")
+    val model     = args.string(1, "default")
+    val maxChars  = args.int(2, 4000)
 
-    val text = row.str(textField).getOrElse("").trim
-    if (text.isEmpty) {
-      ctx.warn(s"[$name] skipping row: '$textField' is empty")
-      return row.set("sentiment_label", "neutral").set("sentiment_score", 0.0)
+    val rawText = row.str(textField).getOrElse("").trim
+    if (rawText.isEmpty) {
+      ctx.warn(s"[$name] empty text in field '$textField' — emitting neutral defaults")
+      return emitNeutral(row, model)
     }
 
-    val prompt =
-      s"""Analyze the sentiment of the following text. Reply with a JSON object only, no explanation.
-         |Format: {"label": "positive"|"negative"|"neutral", "score": <float 0.0-1.0>}
-         |
-         |Text: $text""".stripMargin
+    val text = if (rawText.length > maxChars) rawText.substring(0, maxChars) else rawText
 
+    val prompt   = SentimentLlm.buildPrompt(text)
     val response = ctx.llm().infer(prompt, model)
 
-    val (label, score) = parseLlmResponse(response)
+    val enrichment = SentimentLlm.parseResponse(response)
 
-    val enriched = row
-      .set("sentiment_label", label)
-      .set("sentiment_score", score)
-
-    if (saveResult && entityType.nonEmpty) {
-      val entityId = row.str("id").orElse(row.str("ean")).getOrElse("")
-      val orgId    = ctx.config("webrobot.org.id")
-      val snippet  = text.take(500)
-      ctx.execute(
-        """INSERT INTO sentiment_results (org_id, entity_id, entity_type, text_snippet, label, score, analyzed_at)
-          |VALUES (?, ?, ?, ?, ?, ?, NOW())
-          |ON CONFLICT (org_id, entity_id, entity_type)
-          |DO UPDATE SET label = EXCLUDED.label, score = EXCLUDED.score, analyzed_at = NOW()""".stripMargin,
-        Seq(orgId, entityId, entityType, snippet, label, java.lang.Double.valueOf(score))
-      )
-    }
-
-    enriched
+    row
+      .set("sentiment_polarity",      enrichment.polarity)
+      .set("sentiment_label",         enrichment.label)
+      .set("sentiment_confidence",    enrichment.confidence)
+      .set("sentiment_language",      enrichment.language)
+      .set("sentiment_emotions_json", JsonMini.stringify(enrichment.emotions))
+      .set("sentiment_entities_json", JsonMini.stringify(enrichment.entities.map(e => Map(
+        "text"  -> e.text,
+        "type"  -> e.entityType,
+        "start" -> e.startOffset.map(_.asInstanceOf[AnyRef]).orNull,
+        "end"   -> e.endOffset.map(_.asInstanceOf[AnyRef]).orNull
+      ))))
+      .set("sentiment_aspects_json", JsonMini.stringify(enrichment.aspects.map(a => Map(
+        "entity_text" -> a.entityText,
+        "polarity"    -> a.polarity,
+        "span"        -> a.span
+      ))))
+      .set("sentiment_raw_response", enrichment.rawJson)
+      .set("sentiment_model_used",   model)
   }
 
-  private def parseLlmResponse(response: String): (String, Double) = {
-    val labelPattern = """"label"\s*:\s*"(positive|negative|neutral)"""".r
-    val scorePattern = """"score"\s*:\s*([0-9.]+)""".r
-    val label = labelPattern.findFirstMatchIn(response).map(_.group(1)).getOrElse("neutral")
-    val score = scorePattern.findFirstMatchIn(response).flatMap(m => m.group(1).toDoubleOption).getOrElse(0.5)
-    (label, score)
-  }
+  private def emitNeutral(row: WRow, model: String): WRow =
+    row
+      .set("sentiment_polarity",      0.0)
+      .set("sentiment_label",         "neutral")
+      .set("sentiment_confidence",    0.0)
+      .set("sentiment_language",      "")
+      .set("sentiment_emotions_json", JsonMini.stringify(SentimentLlm.Emotions.map(_ -> 0.0).toMap))
+      .set("sentiment_entities_json", "[]")
+      .set("sentiment_aspects_json",  "[]")
+      .set("sentiment_raw_response",  "")
+      .set("sentiment_model_used",    model)
 }

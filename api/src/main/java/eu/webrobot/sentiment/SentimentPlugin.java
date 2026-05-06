@@ -9,16 +9,22 @@ import javax.ws.rs.*;
 import javax.ws.rs.core.*;
 import java.util.*;
 
+/**
+ * REST API for the sentimental plugin.
+ *
+ * All endpoints are scoped by the org_id resolved from the JWT — never trust query/body input.
+ * Response shapes are chart-ready: time-series endpoints return arrays of {ts, ...}; distribution
+ * endpoints return label→count maps; emotion endpoints return emotion→score maps for radar charts.
+ *
+ * Designed to be consumed both by the dashboard UI and by AI agents (Claude Code MCP tools).
+ */
 @Path("/webrobot/api/sentiment")
 @Produces(MediaType.APPLICATION_JSON)
 public class SentimentPlugin extends WebroPlugin {
 
     private WebroPluginContext ctx;
 
-    @Override
-    public String pluginId() {
-        return "sentimental-plugin";
-    }
+    @Override public String pluginId() { return "sentimental-plugin"; }
 
     @Override
     public void bootstrap(WebroPluginContext context) {
@@ -26,136 +32,309 @@ public class SentimentPlugin extends WebroPlugin {
         System.out.println("[sentimental-plugin] bootstrapped on " + context.buildType());
     }
 
-    /**
-     * On-demand single text analysis.
-     * POST /webrobot/api/sentiment/analyze
-     * Body: { "text": "...", "entity_id": "...", "entity_type": "product", "save": true }
-     */
+    // ── On-demand single-text analysis ────────────────────────────────────────
+
+    /** POST /analyze   { text, source_type?, save?, source_url?, author?, external_id?, published_at? } */
     @POST
     @Path("/analyze")
     @Consumes(MediaType.APPLICATION_JSON)
     public Response analyze(Map<String, Object> body, @Context HttpServletRequest req) {
         String orgId = OrganizationContextHelper.getOrganizationId(req);
+        String text  = String.valueOf(body.getOrDefault("text", "")).trim();
+        if (text.isEmpty()) return bad("Missing 'text' field");
+        if (!ctx.llm().isAvailable()) return Response.status(503).entity(Map.of("error", "No LLM provider configured")).build();
 
-        String text = String.valueOf(body.getOrDefault("text", "")).trim();
-        if (text.isEmpty()) {
-            return Response.status(400).entity(Map.of("error", "Missing 'text' field")).build();
-        }
+        String response = ctx.llm().infer(SentimentLlmPrompt.build(text));
+        Map<String, Object> parsed = SentimentLlmPrompt.parse(response);
 
-        if (!ctx.llm().isAvailable()) {
-            return Response.status(503).entity(Map.of("error", "No LLM provider configured")).build();
-        }
-
-        String prompt =
-            "Analyze the sentiment of the following text. Reply with a JSON object only, no explanation.\n" +
-            "Format: {\"label\": \"positive\"|\"negative\"|\"neutral\", \"score\": <float 0.0-1.0>}\n\n" +
-            "Text: " + text;
-
-        String llmResponse = ctx.llm().infer(prompt);
-        Map<String, Object> parsed = parseLlmResponse(llmResponse);
-
-        boolean save = Boolean.parseBoolean(String.valueOf(body.getOrDefault("save", "false")));
-        String entityId   = String.valueOf(body.getOrDefault("entity_id", ""));
-        String entityType = String.valueOf(body.getOrDefault("entity_type", ""));
-
-        if (save && !entityId.isEmpty() && !entityType.isEmpty()) {
-            ctx.db().execute(
-                "INSERT INTO sentiment_results (org_id, entity_id, entity_type, text_snippet, label, score, analyzed_at) " +
-                "VALUES (?, ?, ?, ?, ?, ?, NOW()) " +
-                "ON CONFLICT (org_id, entity_id, entity_type) " +
-                "DO UPDATE SET label = EXCLUDED.label, score = EXCLUDED.score, analyzed_at = NOW()",
-                List.of(orgId, entityId, entityType, text.substring(0, Math.min(500, text.length())),
-                        parsed.get("label"), parsed.get("score"))
-            );
+        boolean save = parseBool(body.get("save"), false);
+        if (save) {
+            String sourceType = String.valueOf(body.getOrDefault("source_type", "other"));
+            persistFromApi(orgId, sourceType, body, text, parsed, response);
             parsed.put("saved", true);
         }
-
         return Response.ok(parsed).build();
     }
 
-    /**
-     * List stored sentiment results for the org.
-     * GET /webrobot/api/sentiment/results?entity_type=product&label=positive&limit=100
-     */
-    @GET
-    @Path("/results")
-    public Response results(
-            @QueryParam("entity_type") String entityType,
-            @QueryParam("label") String label,
-            @QueryParam("limit") @DefaultValue("100") int limit,
-            @Context HttpServletRequest req) {
+    // ── Time series (line/area chart) ────────────────────────────────────────
 
+    /** GET /timeseries?source_type=&from=&to=&bucket=day|week|month */
+    @GET
+    @Path("/timeseries")
+    public Response timeseries(@QueryParam("source_type") String sourceType,
+                               @QueryParam("from")        String fromDate,
+                               @QueryParam("to")          String toDate,
+                               @QueryParam("bucket")      @DefaultValue("day") String bucket,
+                               @Context HttpServletRequest req) {
+        String orgId = OrganizationContextHelper.getOrganizationId(req);
+        String trunc = sanitizeBucket(bucket);
+
+        StringBuilder sql = new StringBuilder(
+            "SELECT date_trunc('" + trunc + "', published_at)::date AS ts, " +
+            "       COUNT(*) AS count, " +
+            "       AVG(polarity) AS avg_polarity, " +
+            "       COUNT(*) FILTER (WHERE label='positive') AS positive, " +
+            "       COUNT(*) FILTER (WHERE label='negative') AS negative, " +
+            "       COUNT(*) FILTER (WHERE label='neutral')  AS neutral " +
+            "FROM sentiment_documents WHERE org_id = ? AND published_at IS NOT NULL "
+        );
+        List<Object> params = new ArrayList<>();
+        params.add(orgId);
+        if (sourceType != null && !sourceType.isEmpty()) { sql.append("AND source_type = ? "); params.add(sourceType); }
+        if (fromDate   != null && !fromDate.isEmpty())   { sql.append("AND published_at >= ?::date "); params.add(fromDate); }
+        if (toDate     != null && !toDate.isEmpty())     { sql.append("AND published_at <  ?::date "); params.add(toDate); }
+        sql.append("GROUP BY ts ORDER BY ts ASC");
+
+        List<Map<String, Object>> rows = ctx.db().query(sql.toString(), params);
+        return Response.ok(Map.of("series", rows, "bucket", trunc)).build();
+    }
+
+    // ── Label distribution (pie/donut) ────────────────────────────────────────
+
+    /** GET /distribution?source_type=&from=&to= */
+    @GET
+    @Path("/distribution")
+    public Response distribution(@QueryParam("source_type") String sourceType,
+                                 @QueryParam("from")        String fromDate,
+                                 @QueryParam("to")          String toDate,
+                                 @Context HttpServletRequest req) {
         String orgId = OrganizationContextHelper.getOrganizationId(req);
 
-        List<Map<String, Object>> rows;
-        if (label != null && !label.isEmpty()) {
-            rows = ctx.db().query(
-                "SELECT * FROM sentiment_results WHERE org_id = ? AND entity_type = ? AND label = ? ORDER BY analyzed_at DESC LIMIT ?",
-                List.of(orgId, entityType != null ? entityType : "", label, limit)
-            );
-        } else if (entityType != null && !entityType.isEmpty()) {
-            rows = ctx.db().query(
-                "SELECT * FROM sentiment_results WHERE org_id = ? AND entity_type = ? ORDER BY analyzed_at DESC LIMIT ?",
-                List.of(orgId, entityType, limit)
-            );
+        StringBuilder sql = new StringBuilder(
+            "SELECT label, COUNT(*) AS count, AVG(polarity) AS avg_polarity " +
+            "FROM sentiment_documents WHERE org_id = ? "
+        );
+        List<Object> params = new ArrayList<>(); params.add(orgId);
+        if (sourceType != null && !sourceType.isEmpty()) { sql.append("AND source_type = ? "); params.add(sourceType); }
+        if (fromDate   != null && !fromDate.isEmpty())   { sql.append("AND published_at >= ?::date "); params.add(fromDate); }
+        if (toDate     != null && !toDate.isEmpty())     { sql.append("AND published_at <  ?::date "); params.add(toDate); }
+        sql.append("GROUP BY label");
+
+        Map<String, Object> dist = new LinkedHashMap<>();
+        for (Map<String, Object> r : ctx.db().query(sql.toString(), params)) {
+            dist.put(String.valueOf(r.get("label")), r.get("count"));
+        }
+        return Response.ok(Map.of("distribution", dist)).build();
+    }
+
+    // ── Emotion radar (Plutchik 8) ────────────────────────────────────────────
+
+    /** GET /emotions?entity_text=&entity_type=&from=&to= */
+    @GET
+    @Path("/emotions")
+    public Response emotions(@QueryParam("entity_text") String entityText,
+                             @QueryParam("entity_type") String entityType,
+                             @QueryParam("from")        String fromDate,
+                             @QueryParam("to")          String toDate,
+                             @Context HttpServletRequest req) {
+        String orgId = OrganizationContextHelper.getOrganizationId(req);
+
+        StringBuilder sql = new StringBuilder(
+            "SELECT em.emotion, AVG(em.score) AS avg_score, COUNT(DISTINCT d.id) AS doc_count " +
+            "FROM sentiment_documents d JOIN sentiment_emotions em ON em.document_id = d.id "
+        );
+        List<Object> params = new ArrayList<>(); params.add(orgId);
+        if (entityText != null && !entityText.isEmpty()) {
+            sql.append("JOIN sentiment_entities e ON e.document_id = d.id ");
+            sql.append("WHERE d.org_id = ? AND e.text ILIKE ? ");
+            params.add(entityText);
         } else {
-            rows = ctx.db().query(
-                "SELECT * FROM sentiment_results WHERE org_id = ? ORDER BY analyzed_at DESC LIMIT ?",
-                List.of(orgId, limit)
-            );
+            sql.append("WHERE d.org_id = ? ");
         }
+        if (entityType != null && !entityType.isEmpty() && entityText != null && !entityText.isEmpty()) {
+            sql.append("AND e.entity_type = ? "); params.add(entityType);
+        }
+        if (fromDate != null && !fromDate.isEmpty()) { sql.append("AND d.published_at >= ?::date "); params.add(fromDate); }
+        if (toDate   != null && !toDate.isEmpty())   { sql.append("AND d.published_at <  ?::date "); params.add(toDate); }
+        sql.append("GROUP BY em.emotion ORDER BY em.emotion");
 
-        return Response.ok(Map.of("results", rows, "count", rows.size())).build();
+        Map<String, Object> radar = new LinkedHashMap<>();
+        for (Map<String, Object> r : ctx.db().query(sql.toString(), params)) {
+            radar.put(String.valueOf(r.get("emotion")), r.get("avg_score"));
+        }
+        return Response.ok(Map.of("emotions", radar)).build();
     }
 
-    /**
-     * Label distribution summary for an entity type.
-     * GET /webrobot/api/sentiment/summary/{entityType}
-     */
+    // ── Top entities (ranked bar chart) ───────────────────────────────────────
+
+    /** GET /entities/top?type=&from=&to=&limit= */
     @GET
-    @Path("/summary/{entityType}")
-    public Response summary(@PathParam("entityType") String entityType, @Context HttpServletRequest req) {
+    @Path("/entities/top")
+    public Response topEntities(@QueryParam("type")  String entityType,
+                                @QueryParam("from")  String fromDate,
+                                @QueryParam("to")    String toDate,
+                                @QueryParam("limit") @DefaultValue("20") int limit,
+                                @Context HttpServletRequest req) {
         String orgId = OrganizationContextHelper.getOrganizationId(req);
 
-        List<Map<String, Object>> distribution = ctx.db().query(
-            "SELECT label, COUNT(*) as count, ROUND(AVG(score)::numeric, 4) as avg_score " +
-            "FROM sentiment_results WHERE org_id = ? AND entity_type = ? GROUP BY label",
-            List.of(orgId, entityType)
+        StringBuilder sql = new StringBuilder(
+            "SELECT e.text AS entity, e.entity_type AS type, COUNT(*) AS count, " +
+            "       AVG(COALESCE(a.polarity, d.polarity)) AS avg_polarity " +
+            "FROM sentiment_entities e " +
+            "JOIN  sentiment_documents d ON d.id = e.document_id " +
+            "LEFT JOIN sentiment_aspects  a ON a.document_id = d.id AND a.entity_id = e.id " +
+            "WHERE e.org_id = ? "
         );
+        List<Object> params = new ArrayList<>(); params.add(orgId);
+        if (entityType != null && !entityType.isEmpty()) { sql.append("AND e.entity_type = ? "); params.add(entityType); }
+        if (fromDate   != null && !fromDate.isEmpty())   { sql.append("AND d.published_at >= ?::date "); params.add(fromDate); }
+        if (toDate     != null && !toDate.isEmpty())     { sql.append("AND d.published_at <  ?::date "); params.add(toDate); }
+        sql.append("GROUP BY e.text, e.entity_type ORDER BY count DESC LIMIT ?");
+        params.add(limit);
 
-        List<Map<String, Object>> latest = ctx.db().query(
-            "SELECT * FROM sentiment_results WHERE org_id = ? AND entity_type = ? ORDER BY analyzed_at DESC LIMIT 5",
-            List.of(orgId, entityType)
-        );
-
-        return Response.ok(Map.of(
-            "entity_type", entityType,
-            "distribution", distribution,
-            "latest", latest
-        )).build();
+        return Response.ok(Map.of("entities", ctx.db().query(sql.toString(), params))).build();
     }
 
-    // ── helpers ────────────────────────────────────────────────────────────────
+    // ── Compare entities over time (multi-series line) ────────────────────────
 
-    private Map<String, Object> parseLlmResponse(String response) {
-        Map<String, Object> result = new HashMap<>();
-        try {
-            String label = "neutral";
-            double score = 0.5;
-            java.util.regex.Matcher lm = java.util.regex.Pattern
-                .compile("\"label\"\\s*:\\s*\"(positive|negative|neutral)\"")
-                .matcher(response);
-            if (lm.find()) label = lm.group(1);
-            java.util.regex.Matcher sm = java.util.regex.Pattern
-                .compile("\"score\"\\s*:\\s*([0-9.]+)")
-                .matcher(response);
-            if (sm.find()) score = Double.parseDouble(sm.group(1));
-            result.put("label", label);
-            result.put("score", score);
-        } catch (Exception e) {
-            result.put("label", "neutral");
-            result.put("score", 0.5);
+    /** GET /compare?entities=A,B,C&from=&to=&bucket=day */
+    @GET
+    @Path("/compare")
+    public Response compare(@QueryParam("entities") String entitiesCsv,
+                            @QueryParam("from")     String fromDate,
+                            @QueryParam("to")       String toDate,
+                            @QueryParam("bucket")   @DefaultValue("day") String bucket,
+                            @Context HttpServletRequest req) {
+        String orgId = OrganizationContextHelper.getOrganizationId(req);
+        if (entitiesCsv == null || entitiesCsv.isEmpty()) return bad("entities query param required");
+        String trunc = sanitizeBucket(bucket);
+
+        List<String> entities = Arrays.stream(entitiesCsv.split(","))
+                .map(String::trim).filter(s -> !s.isEmpty()).toList();
+
+        Map<String, List<Map<String, Object>>> series = new LinkedHashMap<>();
+        for (String entity : entities) {
+            StringBuilder sql = new StringBuilder(
+                "SELECT date_trunc('" + trunc + "', d.published_at)::date AS ts, " +
+                "       COUNT(*) AS count, " +
+                "       AVG(COALESCE(a.polarity, d.polarity)) AS avg_polarity " +
+                "FROM sentiment_entities e " +
+                "JOIN  sentiment_documents d ON d.id = e.document_id " +
+                "LEFT JOIN sentiment_aspects a ON a.document_id = d.id AND a.entity_id = e.id " +
+                "WHERE e.org_id = ? AND e.text ILIKE ? AND d.published_at IS NOT NULL "
+            );
+            List<Object> params = new ArrayList<>(); params.add(orgId); params.add(entity);
+            if (fromDate != null && !fromDate.isEmpty()) { sql.append("AND d.published_at >= ?::date "); params.add(fromDate); }
+            if (toDate   != null && !toDate.isEmpty())   { sql.append("AND d.published_at <  ?::date "); params.add(toDate); }
+            sql.append("GROUP BY ts ORDER BY ts ASC");
+            series.put(entity, ctx.db().query(sql.toString(), params));
         }
-        return result;
+        return Response.ok(Map.of("bucket", trunc, "series", series)).build();
+    }
+
+    // ── Co-occurrence (network/heatmap) ───────────────────────────────────────
+
+    /** GET /cooccurrence?entity=&from=&to=&limit= */
+    @GET
+    @Path("/cooccurrence")
+    public Response cooccurrence(@QueryParam("entity") String entity,
+                                 @QueryParam("from")   String fromDate,
+                                 @QueryParam("to")     String toDate,
+                                 @QueryParam("limit")  @DefaultValue("30") int limit,
+                                 @Context HttpServletRequest req) {
+        String orgId = OrganizationContextHelper.getOrganizationId(req);
+        if (entity == null || entity.isEmpty()) return bad("entity query param required");
+
+        StringBuilder sql = new StringBuilder(
+            "SELECT e2.text AS co_entity, e2.entity_type AS type, " +
+            "       COUNT(*) AS count, AVG(d.polarity) AS avg_polarity " +
+            "FROM sentiment_entities e1 " +
+            "JOIN  sentiment_entities e2 ON e1.document_id = e2.document_id AND e1.id <> e2.id " +
+            "JOIN  sentiment_documents d ON d.id = e1.document_id " +
+            "WHERE e1.org_id = ? AND e1.text ILIKE ? "
+        );
+        List<Object> params = new ArrayList<>(); params.add(orgId); params.add(entity);
+        if (fromDate != null && !fromDate.isEmpty()) { sql.append("AND d.published_at >= ?::date "); params.add(fromDate); }
+        if (toDate   != null && !toDate.isEmpty())   { sql.append("AND d.published_at <  ?::date "); params.add(toDate); }
+        sql.append("GROUP BY e2.text, e2.entity_type ORDER BY count DESC LIMIT ?");
+        params.add(limit);
+
+        return Response.ok(Map.of("entity", entity, "cooccurring", ctx.db().query(sql.toString(), params))).build();
+    }
+
+    // ── Recent documents (raw browse) ─────────────────────────────────────────
+
+    /** GET /documents?source_type=&label=&entity=&from=&to=&limit= */
+    @GET
+    @Path("/documents")
+    public Response documents(@QueryParam("source_type") String sourceType,
+                              @QueryParam("label")       String label,
+                              @QueryParam("entity")      String entity,
+                              @QueryParam("from")        String fromDate,
+                              @QueryParam("to")          String toDate,
+                              @QueryParam("limit")       @DefaultValue("100") int limit,
+                              @Context HttpServletRequest req) {
+        String orgId = OrganizationContextHelper.getOrganizationId(req);
+        StringBuilder sql = new StringBuilder(
+            "SELECT DISTINCT d.id, d.source_type, d.source_url, d.author, d.published_at, " +
+            "       d.label, d.polarity, d.confidence, d.language, d.text_snippet " +
+            "FROM sentiment_documents d "
+        );
+        List<Object> params = new ArrayList<>();
+        if (entity != null && !entity.isEmpty()) {
+            sql.append("JOIN sentiment_entities e ON e.document_id = d.id ");
+            sql.append("WHERE d.org_id = ? AND e.text ILIKE ? ");
+            params.add(orgId); params.add(entity);
+        } else {
+            sql.append("WHERE d.org_id = ? ");
+            params.add(orgId);
+        }
+        if (sourceType != null && !sourceType.isEmpty()) { sql.append("AND d.source_type = ? "); params.add(sourceType); }
+        if (label      != null && !label.isEmpty())      { sql.append("AND d.label = ? ");       params.add(label); }
+        if (fromDate   != null && !fromDate.isEmpty())   { sql.append("AND d.published_at >= ?::date "); params.add(fromDate); }
+        if (toDate     != null && !toDate.isEmpty())     { sql.append("AND d.published_at <  ?::date "); params.add(toDate); }
+        sql.append("ORDER BY d.published_at DESC NULLS LAST, d.analyzed_at DESC LIMIT ?");
+        params.add(limit);
+
+        return Response.ok(Map.of("documents", ctx.db().query(sql.toString(), params))).build();
+    }
+
+    // ── helpers ───────────────────────────────────────────────────────────────
+
+    private void persistFromApi(String orgId, String sourceType, Map<String, Object> body,
+                                String text, Map<String, Object> parsed, String rawResponse) {
+        // Delegated to ETL save logic via direct SQL — this is a thin shim for one-off API calls.
+        // Production batch usage should go through the sentiment_save ETL stage.
+        String publishedAt = body.get("published_at") != null ? String.valueOf(body.get("published_at")) : null;
+        String sourceUrl   = body.get("source_url")   != null ? String.valueOf(body.get("source_url"))   : null;
+        String author      = body.get("author")       != null ? String.valueOf(body.get("author"))       : null;
+        String externalId  = body.get("external_id")  != null ? String.valueOf(body.get("external_id"))  : null;
+        String textHash    = SentimentLlmPrompt.sha256(text);
+
+        ctx.db().execute(
+            "INSERT INTO sentiment_documents " +
+            " (org_id, source_type, source_url, author, external_id, " +
+            "  published_at, analyzed_at, text_hash, text_snippet, language, " +
+            "  label, polarity, confidence, model_used, raw_response) " +
+            "VALUES (?, ?, ?, ?, ?, ?::timestamptz, NOW(), ?, ?, ?, ?, ?, ?, ?, ?::jsonb) " +
+            "ON CONFLICT (org_id, text_hash, source_type) DO UPDATE SET " +
+            "  analyzed_at = NOW(), label = EXCLUDED.label, polarity = EXCLUDED.polarity, " +
+            "  confidence = EXCLUDED.confidence, raw_response = EXCLUDED.raw_response",
+            Arrays.asList(orgId, sourceType, sourceUrl, author, externalId, publishedAt,
+                textHash, text.substring(0, Math.min(1000, text.length())),
+                parsed.get("language"), parsed.get("label"), parsed.get("polarity"),
+                parsed.get("confidence"), "default", rawResponse == null ? "{}" : rawResponse)
+        );
+        // Note: emotions/entities/aspects child rows are NOT persisted from this thin API path.
+        // Use the ETL pipeline (sentiment_analyze + sentiment_save) for full enrichment.
+    }
+
+    private static String sanitizeBucket(String b) {
+        return switch (b == null ? "day" : b.toLowerCase()) {
+            case "hour"  -> "hour";
+            case "week"  -> "week";
+            case "month" -> "month";
+            default      -> "day";
+        };
+    }
+
+    private static boolean parseBool(Object o, boolean def) {
+        if (o == null) return def;
+        if (o instanceof Boolean b) return b;
+        return Boolean.parseBoolean(String.valueOf(o));
+    }
+
+    private static Response bad(String msg) {
+        return Response.status(400).entity(Map.of("error", msg)).build();
     }
 }
