@@ -13,15 +13,16 @@ Output for each analyzed text:
 
 ## Architecture
 
-Two modules in the same repo:
+Three modules in the same repo:
 
 ```
-etl/        Scala 2.12 — ETL stages (Gradle build)
+etl/        Scala 2.13 — ETL stages (Gradle build)
 api/        Java 11    — REST endpoints (Maven build)
+cli/        Java 11    — `webrobot sentiment ...` CLI subcommands (Maven build)
 manifest.json
 ```
 
-`pluginType: "both"` — the platform loads both modules from a single registration.
+The `etl/` and `api/` modules are loaded by the platform via `pluginType: "both"` in `manifest.json`. The `cli/` JAR is installed separately into `~/.webrobot/plugins/` and discovered by the WebRobot CLI host via ServiceLoader.
 
 ## Storage model
 
@@ -88,16 +89,33 @@ All endpoints scope by org_id from JWT.
 ## Build
 
 ```bash
-# ETL plugin
+# ETL plugin (Scala/Gradle, SDK from JitPack — no auth needed)
 cd etl
-GITHUB_TOKEN=<your-token> ./gradlew jar
+./gradlew jar
 
-# REST API plugin
+# REST API plugin (Java/Maven, SDK from JitPack)
 cd ../api
+mvn package
+
+# CLI extension (Java/Maven, public CLI plugin SDK from JitPack)
+cd ../cli
 mvn package
 ```
 
-Both JARs are uploaded to the WebRobot plugin registry — the manifest `pluginType: "both"` instructs the platform to load both as a single plugin.
+The `etl/` and `api/` JARs are uploaded to the WebRobot plugin registry — the manifest `pluginType: "both"` instructs the platform to load both as a single plugin.
+
+The `cli/target/webrobot-sentimental-plugin-cli-*.jar` is installed into `~/.webrobot/plugins/` (manually for now; `webrobot cli plugins install` lands later). After installation, `webrobot --help` shows the `sentiment` command group.
+
+## CLI subcommands
+
+```bash
+webrobot sentiment analyze "I love this brand"
+webrobot sentiment timeseries --bucket day --from 2026-01-01
+webrobot sentiment distribution --source-type forum
+webrobot sentiment emotions --entity "Brand X"
+webrobot sentiment top-entities --type BRAND --limit 20
+webrobot sentiment compare --entities "Brand X,Brand Y" --from 2026-01-01
+```
 
 ## Agent integration
 
