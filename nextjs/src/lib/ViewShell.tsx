@@ -42,6 +42,13 @@ export function NotImplemented({
   hint: string;
   apiHint?: string;
 }) {
+  // Note: the example below is plain text, not interpolated. We wrap it in
+  // a single JSX expression so JSX doesn't try to evaluate the inner `{...}`
+  // sequences as JSX expressions (which would look up undefined variables
+  // like `apiBaseUrl` and throw at render time).
+  const fetchExample =
+    'fetch(`${apiBaseUrl}/api/...`, { headers: { Authorization: `Bearer ${token}` } })';
+
   return (
     <div
       style={{
@@ -56,7 +63,7 @@ export function NotImplemented({
       {apiHint && (
         <p style={{ marginBottom: 0, marginTop: 8, color: '#92400e', fontSize: 13 }}>
           When wiring the real view, call <code>{apiHint}</code> via{' '}
-          <code>fetch(`${'$'}{apiBaseUrl}/api/...`, {'{'} headers: {'{'} Authorization: `Bearer ${'$'}{token}` {'}'} {'}'})</code>.
+          <code>{fetchExample}</code>.
         </p>
       )}
     </div>
