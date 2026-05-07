@@ -15,6 +15,15 @@ if (!entry) {
 
 export default defineConfig({
   plugins: [react()],
+  // CRITICAL for browser execution: replace `process.env.NODE_ENV` at build
+  // time. In Vite *library* mode this is NOT done by default — only in app
+  // mode. React's jsx-runtime / react-dom production bundles read
+  // `process.env.NODE_ENV` directly; without this define the bundle throws
+  // `ReferenceError: process is not defined` when the dashboard executes
+  // it via blob-URL `import()`.
+  define: {
+    'process.env.NODE_ENV': JSON.stringify('production'),
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: false,
