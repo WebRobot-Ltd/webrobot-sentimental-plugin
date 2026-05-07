@@ -1,0 +1,42 @@
+{
+  "pluginId": "sentimental-plugin-ui",
+  "displayName": "Sentiment Analysis",
+  "menuGroup": "Extensions",
+  "ui": {
+    "zipPath": "s3a://sparklogs-data/plugins/sentimental-plugin-ui/sentimental-plugin-ui.zip"
+  },
+  "views": [
+    {
+      "viewId": "overview",
+      "title": "Overview",
+      "component": "dist/Overview.js",
+      "rolesAllowed": ["super_admin", "admin", "developer", "viewer"]
+    },
+    {
+      "viewId": "documents",
+      "title": "Documents",
+      "component": "dist/Documents.js",
+      "rolesAllowed": ["super_admin", "admin", "developer", "viewer"]
+    },
+    {
+      "viewId": "emotions",
+      "title": "Emotions",
+      "component": "dist/Emotions.js",
+      "rolesAllowed": ["super_admin", "admin", "developer", "viewer"]
+    },
+    {
+      "viewId": "entities",
+      "title": "Entities",
+      "component": "dist/Entities.js",
+      "rolesAllowed": ["super_admin", "admin", "developer", "viewer"]
+    },
+    {
+      "viewId": "settings",
+      "title": "Settings",
+      "component": "dist/Settings.js",
+      "rolesAllowed": ["super_admin", "admin"],
+      "isSettings": true
+    }
+  ],
+  "menuItems": []
+}

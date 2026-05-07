@@ -13,16 +13,17 @@ Output for each analyzed text:
 
 ## Architecture
 
-Three modules in the same repo:
+Four modules in the same repo:
 
 ```
 etl/        Scala 2.13 — ETL stages (Gradle build)
 api/        Java 11    — REST endpoints (Maven build)
 cli/        Java 11    — `webrobot sentiment ...` CLI subcommands (Maven build)
+nextjs/     TypeScript — dashboard UI plugin (Vite build, hot-loaded as ESM)
 manifest.json
 ```
 
-The `etl/` and `api/` modules are loaded by the platform via `pluginType: "both"` in `manifest.json`. The `cli/` JAR is installed separately into `~/.webrobot/plugins/` and discovered by the WebRobot CLI host via ServiceLoader.
+The `etl/` and `api/` modules are loaded by the platform via `pluginType: "both"` in `manifest.json`. The `cli/` JAR is installed separately into `~/.webrobot/plugins/` and discovered by the WebRobot CLI host via ServiceLoader. The `nextjs/` module ships its own `manifest.json` with `pluginId: sentimental-plugin-ui` and `pluginType: nextjs`; the WebRobot dashboard fetches each per-view ESM bundle from MinIO and executes it via blob-URL `import()` (see [`nextjs/README.md`](nextjs/README.md)).
 
 ## Storage model
 
