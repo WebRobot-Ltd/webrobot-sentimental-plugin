@@ -35,5 +35,14 @@ export default defineConfig({
       formats: ['es'],
       fileName: () => `${entry}.js`,
     },
+    rollupOptions: {
+      // CRITICAL: do NOT bundle React into the plugin. The dashboard host
+      // serves an import-map (in app/layout.tsx) that maps "react" and
+      // "react/jsx-runtime" to /host-modules/{react,react-jsx-runtime}.js,
+      // which re-export the host's single React instance. Two React copies
+      // would have separate ReactCurrentDispatcher state and hooks would
+      // throw "Cannot read properties of null (reading 'useState')".
+      external: ['react', 'react/jsx-runtime'],
+    },
   },
 });
