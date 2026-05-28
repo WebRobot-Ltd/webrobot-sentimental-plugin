@@ -33,6 +33,16 @@
       ]
     },
     {
+      "stage_name": "sentiment_explode_aspects",
+      "description": "Denormalizes sentiment_aspects_json into ONE row per (document × aspect). Companion of sentiment_save: place AFTER save so DB persistence sees the intact document, while downstream save_csv / save_parquet sees the exploded flat shape. Trino / dashboards query the flat output without UNNEST / json_extract.",
+      "extensionType": "stage",
+      "arg_schema": [
+        { "name": "aspects_field",  "type": "string",  "required": false, "default": "sentiment_aspects_json",  "description": "Row field carrying the aspects JSON array" },
+        { "name": "keep_empty",     "type": "boolean", "required": false, "default": "false",                    "description": "If true, rows with zero aspects emit one row with NULL aspect_* columns instead of being dropped" },
+        { "name": "entities_field", "type": "string",  "required": false, "default": "sentiment_entities_json", "description": "Row field carrying the entities JSON array (used to enrich each emitted row with aspect_entity_type via text-match)" }
+      ]
+    },
+    {
       "stage_name": "sentiment_filter",
       "description": "Filters rows by sentiment_label, polarity range, dominant emotion, or presence of an entity.",
       "extensionType": "stage",
