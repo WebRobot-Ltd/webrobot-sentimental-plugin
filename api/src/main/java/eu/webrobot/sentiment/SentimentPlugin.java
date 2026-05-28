@@ -36,6 +36,160 @@ public class SentimentPlugin extends WebroPlugin {
         System.out.println("[sentimental-plugin] bootstrapped on " + context.buildType());
     }
 
+    // ── Bootstrap (per-org template clone) ────────────────────────────────────
+    //
+    // Creates a Project + 2 Agents for the calling organization, each with a
+    // pre-defined pipeline YAML embedded below. Same template-cloning shape
+    // as price-comparison.plugin / real-estate.plugin: the org gets its own
+    // independent copies of the pipelines, customizable per-tenant without
+    // touching the other tenants.
+    //
+    // Agents created:
+    //   - Sentiment-forum-monitor-org-N         (scrape forum threads → sentiment)
+    //   - Sentiment-review-aggregator-org-N     (scrape product reviews → sentiment)
+    //
+    // Idempotent: re-running the bootstrap finds existing Project/Agent by name
+    // and refreshes the embedded pipeline YAML so plugin upgrades propagate.
+
+    @POST
+    @Path("/bootstrap")
+    @Consumes(MediaType.APPLICATION_JSON)
+    public Response bootstrap(@Context HttpServletRequest req) {
+        try {
+            String orgId = ctx.orgContext(req).organizationId();
+            Map<String, Object> projectRow   = ensureProject(orgId);
+            long projectId                   = ((Number) projectRow.get("id")).longValue();
+            long forumAgentId   = ensureAgent(orgId, "-forum-monitor",      FORUM_MONITORING_PIPELINE_YAML);
+            long reviewAgentId  = ensureAgent(orgId, "-review-aggregator",  REVIEW_AGGREGATOR_PIPELINE_YAML);
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("organization_id",   orgId);
+            result.put("project_id",        projectId);
+            result.put("forum_agent_id",    forumAgentId);
+            result.put("review_agent_id",   reviewAgentId);
+            result.put("status",            "ready");
+            result.put("note",              "Pipelines persisted; tune the YAML per-agent if needed, or " +
+                                            "register CronJob via cloud-scheduler plugin.");
+            return Response.ok(result).build();
+        } catch (Exception e) {
+            return Response.serverError().entity(Map.of("error", e.getMessage())).build();
+        }
+    }
+
+    private static final String PROJECT_NAME_PREFIX = "Sentiment";
+
+    private Map<String, Object> ensureProject(String orgId) {
+        String name = PROJECT_NAME_PREFIX + "-org-" + orgId;
+        List<Map<String, Object>> existing = ctx.db().query(
+            "SELECT id FROM projects WHERE name = ? AND organization_id = ?",
+            Arrays.asList(name, orgId));
+        if (!existing.isEmpty()) return existing.get(0);
+        long id = ctx.db().insertReturning(
+            "INSERT INTO projects (name, description, organization_id, enabled, created_at, updated_at) " +
+            "VALUES (?, ?, ?, TRUE, NOW(), NOW()) RETURNING id",
+            Arrays.asList(name, "Sentiment monitoring — auto-created by sentimental-plugin", orgId));
+        return Map.of("id", id, "name", name, "organization_id", orgId);
+    }
+
+    private long ensureAgent(String orgId, String suffix, String pipelineYaml) {
+        String name = PROJECT_NAME_PREFIX + suffix + "-org-" + orgId;
+        List<Map<String, Object>> existing = ctx.db().query(
+            "SELECT id FROM agents WHERE name = ? AND organization_id = ?",
+            Arrays.asList(name, orgId));
+        if (!existing.isEmpty()) {
+            long id = ((Number) existing.get(0).get("id")).longValue();
+            // Refresh pipeline_yaml in case the embedded template changed in a plugin upgrade
+            ctx.db().execute(
+                "UPDATE agents SET pipeline_yaml = ?, updated_at = NOW() WHERE id = ?",
+                Arrays.asList(pipelineYaml, id));
+            return id;
+        }
+        return ctx.db().insertReturning(
+            "INSERT INTO agents (name, description, organization_id, pipeline_yaml, enabled, " +
+            "                    type, execution_mode, created_at, updated_at) " +
+            "VALUES (?, ?, ?, ?, TRUE, 'pipeline', 'spark', NOW(), NOW()) RETURNING id",
+            Arrays.asList(name,
+                          "Sentiment pipeline (" + suffix.replaceFirst("^-", "") + ") — auto-created by sentimental-plugin",
+                          orgId, pipelineYaml));
+    }
+
+    // ── Embedded pipeline templates ───────────────────────────────────────────
+
+    /** Phase 1: discover forum/community threads, scrape posts, enrich each with sentiment_analyze + sentiment_save. */
+    private static final String FORUM_MONITORING_PIPELINE_YAML =
+        "pipeline:\n" +
+        "  # 1. Discover forum threads via search engine (configure ${FORUM_QUERY} at run time)\n" +
+        "  - stage: searchEngine\n" +
+        "    args:\n" +
+        "      - provider: \"google\"\n" +
+        "        query: \"${FORUM_QUERY}\"\n" +
+        "        num_results: 30\n" +
+        "        enrich: false\n" +
+        "  # 2. Visit each discovered thread\n" +
+        "  - stage: visit\n" +
+        "    args:\n" +
+        "      - \"$result_link\"\n" +
+        "  # 3. Flatten thread into individual post rows\n" +
+        "  - stage: comment_extractor\n" +
+        "    args: []\n" +
+        "  # 4. LLM enrichment per post → polarity/emotions/entities/aspects\n" +
+        "  - stage: sentiment_analyze\n" +
+        "    args:\n" +
+        "      - text_field: \"text\"\n" +
+        "  # 5. Atomic write to sentiment_documents + child tables\n" +
+        "  - stage: sentiment_save\n" +
+        "    args:\n" +
+        "      - source_type: \"forum\"\n" +
+        "        text_field: \"text\"\n" +
+        "        published_at_field: \"post_timestamp\"\n" +
+        "        source_url_field: \"post_url\"\n" +
+        "        author_field: \"author\"\n" +
+        "        external_id_field: \"post_id\"\n" +
+        "output:\n" +
+        "  format: \"parquet\"\n" +
+        "  path: \"${OUTPUT_PARQUET_PATH}\"\n" +
+        "  mode: \"overwrite\"\n";
+
+    /** Phase 1 variant: scrape product reviews from e-commerce listings (single product URL → per-review rows). */
+    private static final String REVIEW_AGGREGATOR_PIPELINE_YAML =
+        "pipeline:\n" +
+        "  # 1. Trigger CSV carrying the product review-page URLs to monitor\n" +
+        "  - stage: load_csv\n" +
+        "    args:\n" +
+        "      - path: \"${INPUT_CSV_PATH}\"\n" +
+        "        header: \"true\"\n" +
+        "  # 2. Visit each product review page (paginated)\n" +
+        "  - stage: visit\n" +
+        "    args:\n" +
+        "      - \"$review_url\"\n" +
+        "  # 3. Extract structured review rows (title, body, rating, author, date)\n" +
+        "  - stage: iextract\n" +
+        "    args:\n" +
+        "      - selector: \"body\"\n" +
+        "        method: \"code\"\n" +
+        "      - \"Extract from this product reviews page each review as a row with: " +
+              "review body text (field: text), rating 1-5 if visible (field: rating), " +
+              "author / username (field: author), review date as ISO-8601 if visible " +
+              "(field: published_at), review URL or anchor (field: source_url). " +
+              "Return ALL reviews on the page, one row each. Preserve any input fields.\"\n" +
+        "      - \"\"\n" +
+        "  # 4. LLM sentiment enrichment per review\n" +
+        "  - stage: sentiment_analyze\n" +
+        "    args:\n" +
+        "      - text_field: \"text\"\n" +
+        "  # 5. Atomic persist\n" +
+        "  - stage: sentiment_save\n" +
+        "    args:\n" +
+        "      - source_type: \"review\"\n" +
+        "        text_field: \"text\"\n" +
+        "        published_at_field: \"published_at\"\n" +
+        "        source_url_field: \"source_url\"\n" +
+        "        author_field: \"author\"\n" +
+        "output:\n" +
+        "  format: \"parquet\"\n" +
+        "  path: \"${OUTPUT_PARQUET_PATH}\"\n" +
+        "  mode: \"overwrite\"\n";
+
     // ── On-demand single-text analysis ────────────────────────────────────────
 
     @POST
