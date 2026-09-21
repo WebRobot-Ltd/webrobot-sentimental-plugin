@@ -22,7 +22,7 @@ val scalaFullV = "2.13.12"
 
 dependencies {
     // Public Plugin SDK via JitPack — partners need no auth to fetch
-    compileOnly("com.github.WebRobot-Ltd:webrobot-plugin-sdk:v0.2.1")
+    compileOnly("com.github.WebRobot-Ltd:webrobot-plugin-sdk:v0.3.0")
     compileOnly("org.scala-lang:scala-library:$scalaFullV")
 
     testImplementation("org.scalatest:scalatest_$scalaV:3.2.18")
