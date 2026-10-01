@@ -415,8 +415,11 @@ public class SentimentPlugin extends WebroPlugin {
                               @Context HttpServletRequest req) {
         String orgId = ctx.orgContext(req).organizationId();
         StringBuilder sql = new StringBuilder(
+            // analyzed_at is in the ORDER BY, so with SELECT DISTINCT it MUST also be in the select
+            // list (Postgres: "for SELECT DISTINCT, ORDER BY expressions must appear in select list").
+            // DISTINCT is needed because the optional entities JOIN can duplicate a document row.
             "SELECT DISTINCT d.id, d.source_type, d.source_url, d.author, d.published_at, " +
-            "       d.label, d.polarity, d.confidence, d.language, d.text_snippet " +
+            "       d.analyzed_at, d.label, d.polarity, d.confidence, d.language, d.text_snippet " +
             "FROM sentiment_documents d "
         );
         List<Object> params = new ArrayList<>();
