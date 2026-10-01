@@ -1,0 +1,8 @@
+{
+  "pluginId": "sentimental-plugin",
+  "pluginType": "api",
+  "version": "0.2.1",
+  "displayName": "Sentiment Analysis Plugin \u2014 REST API",
+  "mainClass": "eu.webrobot.sentiment.SentimentPlugin",
+  "bootstrapMethod": "bootstrap"
+}

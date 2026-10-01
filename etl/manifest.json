@@ -1,0 +1,199 @@
+{
+  "pluginId": "sentimental-plugin-etl",
+  "pluginType": "spark_stage",
+  "version": "0.2.1",
+  "displayName": "Sentiment Analysis Plugin \u2014 ETL stages",
+  "stages": [
+    {
+      "stage_name": "sentiment_analyze",
+      "description": "Runs LLM on a text field. Enriches the row with polarity, label, confidence, language, plus JSON fields: emotions (Plutchik-8), entities (NER), aspects (per-entity polarity). Does NOT persist \u2014 pipe to sentiment_save.",
+      "extensionType": "stage",
+      "arg_schema": [
+        {
+          "name": "text_field",
+          "type": "string",
+          "required": true,
+          "description": "Field containing the text to analyze"
+        },
+        {
+          "name": "model",
+          "type": "string",
+          "required": false,
+          "default": "default",
+          "description": "LLM provider alias"
+        },
+        {
+          "name": "max_chars",
+          "type": "integer",
+          "required": false,
+          "default": "4000",
+          "description": "Truncate input to this length before sending to LLM"
+        }
+      ]
+    },
+    {
+      "stage_name": "sentiment_save",
+      "description": "Atomic sink: persists an enriched row to sentiment_documents + sentiment_emotions + sentiment_entities + sentiment_aspects in a single transaction. Deduplicates by (org_id, text_hash, source_type).",
+      "extensionType": "stage",
+      "arg_schema": [
+        {
+          "name": "source_type",
+          "type": "string",
+          "required": true,
+          "description": "forum / review / news / social / other"
+        },
+        {
+          "name": "text_field",
+          "type": "string",
+          "required": false,
+          "default": "text"
+        },
+        {
+          "name": "published_at_field",
+          "type": "string",
+          "required": false,
+          "default": "published_at",
+          "description": "Field with original publication timestamp (ISO-8601)"
+        },
+        {
+          "name": "source_url_field",
+          "type": "string",
+          "required": false,
+          "default": "source_url"
+        },
+        {
+          "name": "author_field",
+          "type": "string",
+          "required": false,
+          "default": "author"
+        },
+        {
+          "name": "external_id_field",
+          "type": "string",
+          "required": false,
+          "default": "external_id"
+        }
+      ]
+    },
+    {
+      "stage_name": "sentiment_explode_aspects",
+      "description": "Denormalizes sentiment_aspects_json into ONE row per (document \u00d7 aspect). Companion of sentiment_save: place AFTER save so DB persistence sees the intact document, while downstream save_csv / save_parquet sees the exploded flat shape. Trino / dashboards query the flat output without UNNEST / json_extract.",
+      "extensionType": "stage",
+      "arg_schema": [
+        {
+          "name": "aspects_field",
+          "type": "string",
+          "required": false,
+          "default": "sentiment_aspects_json",
+          "description": "Row field carrying the aspects JSON array"
+        },
+        {
+          "name": "keep_empty",
+          "type": "boolean",
+          "required": false,
+          "default": "false",
+          "description": "If true, rows with zero aspects emit one row with NULL aspect_* columns instead of being dropped"
+        },
+        {
+          "name": "entities_field",
+          "type": "string",
+          "required": false,
+          "default": "sentiment_entities_json",
+          "description": "Row field carrying the entities JSON array (used to enrich each emitted row with aspect_entity_type via text-match)"
+        }
+      ]
+    },
+    {
+      "stage_name": "sentiment_filter",
+      "description": "Filters rows by sentiment_label, polarity range, dominant emotion, or presence of an entity.",
+      "extensionType": "stage",
+      "arg_schema": [
+        {
+          "name": "label",
+          "type": "string",
+          "required": false,
+          "default": ""
+        },
+        {
+          "name": "min_polarity",
+          "type": "number",
+          "required": false,
+          "default": "-1.0"
+        },
+        {
+          "name": "max_polarity",
+          "type": "number",
+          "required": false,
+          "default": "1.0"
+        },
+        {
+          "name": "dominant_emotion",
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Keep rows where this emotion has the highest score"
+        },
+        {
+          "name": "contains_entity",
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "Keep rows where entities[] contains this text (case-insensitive)"
+        }
+      ]
+    },
+    {
+      "stage_name": "sentiment_load",
+      "description": "Source: loads documents from DB filtered by org / source_type / time window. Joins emotions/entities/aspects on demand.",
+      "extensionType": "stage",
+      "arg_schema": [
+        {
+          "name": "source_type",
+          "type": "string",
+          "required": false,
+          "default": ""
+        },
+        {
+          "name": "from_date",
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "ISO date inclusive lower bound on published_at"
+        },
+        {
+          "name": "to_date",
+          "type": "string",
+          "required": false,
+          "default": "",
+          "description": "ISO date exclusive upper bound on published_at"
+        },
+        {
+          "name": "label",
+          "type": "string",
+          "required": false,
+          "default": ""
+        },
+        {
+          "name": "limit",
+          "type": "integer",
+          "required": false,
+          "default": "1000"
+        }
+      ]
+    },
+    {
+      "stage_name": "sentiment_refresh_aggregates",
+      "description": "Refreshes the materialized aggregate tables (daily_overall, daily_by_entity, daily_emotions). Run on a schedule. Operates on its current org only.",
+      "extensionType": "stage",
+      "arg_schema": [
+        {
+          "name": "lookback_days",
+          "type": "integer",
+          "required": false,
+          "default": "90",
+          "description": "Recompute aggregates for the last N days"
+        }
+      ]
+    }
+  ]
+}
