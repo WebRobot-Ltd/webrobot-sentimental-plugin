@@ -115,14 +115,24 @@ if [ -d "$ROOT_DIR/nextjs" ]; then
 fi
 
 # ── 5. DB migrations ───────────────────────────────────────────────
-for src in db/migration etl/src/main/resources/db/migration api/src/main/resources/db/migration; do
-  if [ -d "$ROOT_DIR/$src" ] && ls "$ROOT_DIR/$src"/*.sql >/dev/null 2>&1; then
-    mkdir -p "$STAGE_DIR/db/migration"
-    cp "$ROOT_DIR/$src"/*.sql "$STAGE_DIR/db/migration/" 2>/dev/null || true
-    echo "  + db/migration/ from $src"
-    break
-  fi
+# Stage every *.sql under the known migration roots, flattened into the bundle's
+# top-level db/migration/. The bundle-install endpoint stages SQL by scanning the
+# zip under db/migration/ (root manifest's dbMigrations.location), so the files must
+# live there — not only nested in a component jar. We recurse because plugins keep
+# their SQL in a versioned subfolder (e.g. api/src/main/resources/db/migration/sentiment/).
+MIG_ROOTS=""
+for d in "db/migration" "etl/src/main/resources/db/migration" "api/src/main/resources/db/migration"; do
+  [ -d "$ROOT_DIR/$d" ] && MIG_ROOTS="$MIG_ROOTS $ROOT_DIR/$d"
 done
+SQL_FILES=""
+[ -n "$MIG_ROOTS" ] && SQL_FILES=$(find $MIG_ROOTS -name '*.sql' 2>/dev/null | sort -u || true)
+if [ -n "$SQL_FILES" ]; then
+  mkdir -p "$STAGE_DIR/db/migration"
+  while IFS= read -r f; do
+    cp "$f" "$STAGE_DIR/db/migration/$(basename "$f")"
+    echo "  + db/migration/$(basename "$f")"
+  done <<< "$SQL_FILES"
+fi
 
 # ── 6. Root manifest ───────────────────────────────────────────────
 cp "$ROOT_DIR/manifest.json" "$STAGE_DIR/manifest.json"
