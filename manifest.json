@@ -1,6 +1,6 @@
 {
   "pluginId": "sentimental-plugin",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "displayName": "Sentiment Analysis Plugin",
   "description": "LLM-powered rich sentiment analysis: polarity + Plutchik 8-emotion vector + named entities + aspect-based per-entity sentiment. ETL stages for batch enrichment, REST API for chart-ready queries and agent integration.",
   "license": "proprietary",

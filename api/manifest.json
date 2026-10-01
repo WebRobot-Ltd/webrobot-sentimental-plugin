@@ -1,8 +1,12 @@
 {
   "pluginId": "sentimental-plugin",
   "pluginType": "api",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "displayName": "Sentiment Analysis Plugin \u2014 REST API",
   "mainClass": "eu.webrobot.sentiment.SentimentPlugin",
-  "bootstrapMethod": "bootstrap"
+  "bootstrapMethod": "bootstrap",
+  "dbMigrations": {
+    "enabled": true,
+    "location": "db/migration"
+  }
 }
