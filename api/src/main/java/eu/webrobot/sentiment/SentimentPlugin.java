@@ -555,11 +555,17 @@ public class SentimentPlugin extends WebroPlugin {
 
     private void persistFromApi(String orgId, String sourceType, Map<String, Object> body,
                                 String text, Map<String, Object> parsed, String rawResponse) {
-        String publishedAt = body.get("published_at") != null ? String.valueOf(body.get("published_at")) : null;
+        String publishedAt = cleanTimestamp(body.get("published_at"));
         String sourceUrl   = body.get("source_url")   != null ? String.valueOf(body.get("source_url"))   : null;
         String author      = body.get("author")       != null ? String.valueOf(body.get("author"))       : null;
         String externalId  = body.get("external_id")  != null ? String.valueOf(body.get("external_id"))  : null;
         String textHash    = SentimentLlmPrompt.sha256(text);
+        // The LLM output goes into a jsonb column. Claude (via the OAuth subscription) often wraps the
+        // JSON object in ```json fences or surrounding prose, so the RAW string is not valid JSON and the
+        // ?::jsonb cast throws "invalid input syntax for type json". parse() survives that (it is regex-
+        // based), but the insert does not — sanitise to the bare, valid JSON object first. The extracted
+        // {..} block still carries emotions/entities/aspects, so reconcile keeps working.
+        String rawJson = cleanJson(rawResponse, parsed);
 
         ctx.db().execute(
             "INSERT INTO sentiment_documents " +
@@ -573,10 +579,48 @@ public class SentimentPlugin extends WebroPlugin {
             Arrays.asList(orgId, sourceType, sourceUrl, author, externalId, publishedAt,
                 textHash, text.substring(0, Math.min(1000, text.length())),
                 parsed.get("language"), parsed.get("label"), parsed.get("polarity"),
-                parsed.get("confidence"), "default", rawResponse == null ? "{}" : rawResponse)
+                parsed.get("confidence"), "default", rawJson)
         );
         // Note: emotions/entities/aspects child rows are NOT persisted from this thin API path.
         // Use the ETL pipeline (sentiment_analyze + sentiment_save) for full enrichment.
+    }
+
+    /**
+     * Reduce an LLM response to a valid JSON object string safe for a {@code ?::jsonb} cast.
+     * Strips markdown ``` fences and any prose around the object, then keeps the outermost
+     * {@code {..}} block and validates it parses. On any failure, falls back to re-serialising the
+     * already-parsed scalars+emotions so the row is still valid JSON (reconcile then has less to
+     * backfill, but the insert never throws).
+     */
+    private static String cleanJson(String raw, Map<String, Object> fallback) {
+        try {
+            if (raw != null) {
+                String s = raw.trim();
+                if (s.startsWith("```")) {                     // ```json\n{...}\n```  or  ```\n{...}\n```
+                    int nl = s.indexOf('\n');
+                    if (nl >= 0) s = s.substring(nl + 1);
+                    int fence = s.lastIndexOf("```");
+                    if (fence >= 0) s = s.substring(0, fence);
+                    s = s.trim();
+                }
+                int a = s.indexOf('{');
+                int b = s.lastIndexOf('}');
+                if (a >= 0 && b > a) {
+                    String candidate = s.substring(a, b + 1);
+                    MAPPER.readTree(candidate);                // throws if not valid JSON
+                    return candidate;
+                }
+            }
+        } catch (Exception ignored) { /* fall through to the reconstructed fallback */ }
+        try { return MAPPER.writeValueAsString(fallback); } catch (Exception e) { return "{}"; }
+    }
+
+    /** Accept only an ISO-ish date / datetime for the {@code ?::timestamptz} cast; anything else → null. */
+    private static String cleanTimestamp(Object o) {
+        if (o == null) return null;
+        String s = String.valueOf(o).trim();
+        if (s.isEmpty() || !s.matches("\\d{4}-\\d{2}-\\d{2}([ T].*)?")) return null;
+        return s;
     }
 
     private static String sanitizeBucket(String b) {
