@@ -5,6 +5,9 @@ import eu.webrobot.plugin.jersey.OrgScoped;
 import eu.webrobot.plugin.jersey.WebroPlugin;
 import eu.webrobot.plugin.jersey.WebroPluginContext;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.*;
 import javax.ws.rs.core.*;
@@ -212,6 +215,113 @@ public class SentimentPlugin extends WebroPlugin {
         }
         return Response.ok(parsed).build();
     }
+
+    // ── Reconcile (close the loop: backfill child enrichment) ─────────────────
+    //
+    // A document persisted document-level only (e.g. the thin /analyze save path,
+    // whose parse() extracts scalars+emotions but NOT entities/aspects, and which
+    // writes no child rows) is INVISIBLE to the entity-scoped aggregations
+    // (/emotions?entity_text, /entities/top, /cooccurrence, /compare) because those
+    // read sentiment_emotions/_entities/_aspects. But every document stores the FULL
+    // LLM JSON in raw_response. This reconciler finds documents missing child rows
+    // and backfills emotions/entities/aspects by RE-PARSING raw_response — no
+    // re-crawl, no re-LLM. Run it BEFORE building aggregates/charts so direct-ingested
+    // documents appear in the entity views too. Idempotent.
+    @POST
+    @Path("/reconcile")
+    public Response reconcile(@QueryParam("limit") @DefaultValue("1000") int limit,
+                              @Context HttpServletRequest req) {
+        String orgId = ctx.orgContext(req).organizationId();
+        int cap = (limit > 0 && limit <= 5000) ? limit : 1000;
+        List<Map<String, Object>> docs = ctx.db().query(
+            "SELECT d.id AS id, d.raw_response AS raw_response FROM sentiment_documents d " +
+            "WHERE d.org_id = ? AND d.raw_response IS NOT NULL AND d.raw_response <> '{}' " +
+            "  AND NOT EXISTS (SELECT 1 FROM sentiment_emotions e WHERE e.document_id = d.id) " +
+            "ORDER BY d.analyzed_at DESC NULLS LAST LIMIT ?",
+            Arrays.asList(orgId, cap));
+        int reconciled = 0, failed = 0;
+        for (Map<String, Object> d : docs) {
+            Object idObj = d.get("id");
+            long documentId = (idObj instanceof Number) ? ((Number) idObj).longValue()
+                    : Long.parseLong(String.valueOf(idObj));
+            String raw = d.get("raw_response") == null ? null : String.valueOf(d.get("raw_response"));
+            try {
+                if (backfillChildren(orgId, documentId, raw)) reconciled++;
+            } catch (Exception e) {
+                failed++;
+                System.out.println("[sentimental-plugin] reconcile doc " + documentId + " failed: " + e);
+            }
+        }
+        return Response.ok(Map.of("scanned", docs.size(), "reconciled", reconciled, "failed", failed)).build();
+    }
+
+    /**
+     * Backfill emotions/entities/aspects for one document from its stored raw_response (the full LLM
+     * JSON). Mirrors SentimentSaveStage's child persistence. DELETE-then-INSERT → idempotent. Returns
+     * true when at least one child row was written.
+     */
+    private boolean backfillChildren(String orgId, long documentId, String raw) throws Exception {
+        if (raw == null || raw.isBlank()) return false;
+        JsonNode root = MAPPER.readTree(raw);
+        // idempotent: clear any existing children first
+        ctx.db().execute("DELETE FROM sentiment_emotions WHERE document_id = ?", Arrays.asList(documentId));
+        ctx.db().execute("DELETE FROM sentiment_aspects  WHERE document_id = ?", Arrays.asList(documentId));
+        ctx.db().execute("DELETE FROM sentiment_entities WHERE document_id = ?", Arrays.asList(documentId));
+
+        boolean wrote = false;
+        // emotions — the 8 Plutchik dimensions (same list the prompt/save use)
+        JsonNode emo = root.path("emotions");
+        for (String e : SentimentLlmPrompt.EMOTIONS) {
+            double score = emo.path(e).asDouble(0.0);
+            ctx.db().execute(
+                "INSERT INTO sentiment_emotions (document_id, org_id, emotion, score) VALUES (?, ?, ?, ?)",
+                Arrays.asList(documentId, orgId, e, score));
+            wrote = true;
+        }
+        // entities — capture id by text to link aspects
+        Map<String, Long> entityIdByText = new HashMap<>();
+        Map<String, String> entityTypeByText = new HashMap<>();
+        JsonNode ents = root.path("entities");
+        if (ents.isArray()) {
+            for (JsonNode en : ents) {
+                String text = en.path("text").asText("").trim();
+                if (text.isEmpty()) continue;
+                String type = en.path("type").asText("OTHER");
+                Integer start = en.has("start") && !en.path("start").isNull() ? en.path("start").asInt() : null;
+                Integer end   = en.has("end")   && !en.path("end").isNull()   ? en.path("end").asInt()   : null;
+                long entId = ctx.db().insertReturning(
+                    "INSERT INTO sentiment_entities " +
+                    " (document_id, org_id, canonical_id, text, entity_type, start_offset, end_offset) " +
+                    "VALUES (?, ?, NULL, ?, ?, ?, ?) RETURNING id",
+                    Arrays.asList(documentId, orgId, text, type, start, end));
+                entityIdByText.put(text, entId);
+                entityTypeByText.put(text, type);
+                wrote = true;
+            }
+        }
+        // aspects — link to the entity id by text when present
+        JsonNode asp = root.path("aspects");
+        if (asp.isArray()) {
+            for (JsonNode a : asp) {
+                String entityText = a.path("entity_text").asText("").trim();
+                if (entityText.isEmpty()) continue;
+                Long entityId = entityIdByText.get(entityText);
+                double polarity = a.path("polarity").asDouble(0.0);
+                String span = a.path("span").asText(null);
+                ctx.db().execute(
+                    "INSERT INTO sentiment_aspects " +
+                    " (document_id, entity_id, org_id, entity_text, entity_type, polarity, span) " +
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    Arrays.asList(documentId, entityId, orgId, entityText,
+                        entityTypeByText.getOrDefault(entityText, "OTHER"), polarity,
+                        (span == null || span.isEmpty()) ? null : span));
+                wrote = true;
+            }
+        }
+        return wrote;
+    }
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     // ── Time series ──────────────────────────────────────────────────────────
 
