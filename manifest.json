@@ -1,6 +1,6 @@
 {
   "pluginId": "sentimental-plugin",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "displayName": "Sentiment Analysis Plugin",
   "description": "LLM-powered rich sentiment analysis: polarity + Plutchik 8-emotion vector + named entities + aspect-based per-entity sentiment. ETL stages for batch enrichment, REST API for chart-ready queries and agent integration.",
   "license": "proprietary",
@@ -17,7 +17,7 @@
     {
       "type": "jersey",
       "subId": "sentimental-plugin",
-      "jar": "api/webrobot-sentimental-plugin-api-0.2.5.jar",
+      "jar": "api/webrobot-sentimental-plugin-api-0.2.6.jar",
       "manifest": "api/manifest.json",
       "mainClass": "eu.webrobot.sentiment.SentimentPlugin",
       "bootstrap": "bootstrap"
