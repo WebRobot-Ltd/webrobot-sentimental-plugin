@@ -30,13 +30,18 @@ class SentimentSaveStage extends WSinkStage {
     val sourceUrlField    = args.string(3, "source_url")
     val authorField       = args.string(4, "author")
     val externalIdField   = args.string(5, "external_id")
-    // arg 6 = campaign token (LITERAL, like source_type) — scopes this run's docs for the
-    // per-run/per-topic charts. Empty = unscoped (legacy). A job-level SparkConf override wins
-    // when present (so the platform can stamp it even if the pipeline omits the arg).
+    // Campaign token — scopes this run's docs for the per-run/per-topic charts. The PLATFORM-injected
+    // value WINS over the pipeline arg: the agent is unreliable at copying the token into arg[6], so
+    // the platform stamps it deterministically via the Spark conf (ProjectServiceImpl sets
+    // spark.webrobot.campaign from the agentic run's inputs.campaign) or the WEBROBOT_CAMPAIGN env.
+    // Precedence: conf webrobot.campaign → conf spark.webrobot.campaign → env WEBROBOT_CAMPAIGN →
+    // arg[6] (legacy / explicit). Empty = unscoped.
     val campaign          = {
-      val fromConf = scala.util.Try(ctx.config("webrobot.campaign")).toOption
-        .flatMap(Option(_)).map(_.trim).getOrElse("")
-      if (fromConf.nonEmpty) fromConf else args.string(6, "").trim
+      def cf(k: String) = scala.util.Try(ctx.config(k)).toOption.flatMap(Option(_)).map(_.trim).getOrElse("")
+      val fromPlatform =
+        Seq(cf("webrobot.campaign"), cf("spark.webrobot.campaign"),
+            sys.env.getOrElse("WEBROBOT_CAMPAIGN", "").trim).find(_.nonEmpty).getOrElse("")
+      if (fromPlatform.nonEmpty) fromPlatform else args.string(6, "").trim
     }
 
     val orgId = ctx.config("webrobot.org.id")
