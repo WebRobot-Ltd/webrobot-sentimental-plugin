@@ -331,6 +331,7 @@ public class SentimentPlugin extends WebroPlugin {
                                @QueryParam("from")        String fromDate,
                                @QueryParam("to")          String toDate,
                                @QueryParam("bucket")      @DefaultValue("day") String bucket,
+                               @QueryParam("campaign")    String campaign,
                                @Context HttpServletRequest req) {
         String orgId = ctx.orgContext(req).organizationId();
         String trunc = sanitizeBucket(bucket);
@@ -348,6 +349,7 @@ public class SentimentPlugin extends WebroPlugin {
         if (notEmpty(sourceType)) { sql.append("AND source_type = ? ");        params.add(sourceType); }
         if (notEmpty(fromDate))   { sql.append("AND published_at >= ?::date "); params.add(fromDate); }
         if (notEmpty(toDate))     { sql.append("AND published_at <  ?::date "); params.add(toDate); }
+        if (notEmpty(campaign))   { sql.append("AND campaign = ? ");             params.add(campaign); }
         sql.append("GROUP BY ts ORDER BY ts ASC");
 
         return Response.ok(Map.of(
@@ -362,6 +364,7 @@ public class SentimentPlugin extends WebroPlugin {
     public Response distribution(@QueryParam("source_type") String sourceType,
                                  @QueryParam("from")        String fromDate,
                                  @QueryParam("to")          String toDate,
+                                 @QueryParam("campaign")    String campaign,
                                  @Context HttpServletRequest req) {
         String orgId = ctx.orgContext(req).organizationId();
 
@@ -373,6 +376,7 @@ public class SentimentPlugin extends WebroPlugin {
         if (notEmpty(sourceType)) { sql.append("AND source_type = ? ");         params.add(sourceType); }
         if (notEmpty(fromDate))   { sql.append("AND published_at >= ?::date "); params.add(fromDate); }
         if (notEmpty(toDate))     { sql.append("AND published_at <  ?::date "); params.add(toDate); }
+        if (notEmpty(campaign))   { sql.append("AND campaign = ? ");             params.add(campaign); }
         sql.append("GROUP BY label");
 
         Map<String, Object> dist = new LinkedHashMap<>();
@@ -390,6 +394,7 @@ public class SentimentPlugin extends WebroPlugin {
                              @QueryParam("entity_type") String entityType,
                              @QueryParam("from")        String fromDate,
                              @QueryParam("to")          String toDate,
+                             @QueryParam("campaign")    String campaign,
                              @Context HttpServletRequest req) {
         String orgId = ctx.orgContext(req).organizationId();
 
@@ -410,6 +415,7 @@ public class SentimentPlugin extends WebroPlugin {
         }
         if (notEmpty(fromDate)) { sql.append("AND d.published_at >= ?::date "); params.add(fromDate); }
         if (notEmpty(toDate))   { sql.append("AND d.published_at <  ?::date "); params.add(toDate); }
+        if (notEmpty(campaign)) { sql.append("AND d.campaign = ? ");            params.add(campaign); }
         sql.append("GROUP BY em.emotion ORDER BY em.emotion");
 
         Map<String, Object> radar = new LinkedHashMap<>();
@@ -423,9 +429,10 @@ public class SentimentPlugin extends WebroPlugin {
 
     @GET
     @Path("/entities/top")
-    public Response topEntities(@QueryParam("type")  String entityType,
-                                @QueryParam("from")  String fromDate,
-                                @QueryParam("to")    String toDate,
+    public Response topEntities(@QueryParam("type")     String entityType,
+                                @QueryParam("from")     String fromDate,
+                                @QueryParam("to")       String toDate,
+                                @QueryParam("campaign") String campaign,
                                 @QueryParam("limit") @DefaultValue("20") int limit,
                                 @Context HttpServletRequest req) {
         String orgId = ctx.orgContext(req).organizationId();
@@ -442,6 +449,7 @@ public class SentimentPlugin extends WebroPlugin {
         if (notEmpty(entityType)) { sql.append("AND e.entity_type = ? ");         params.add(entityType); }
         if (notEmpty(fromDate))   { sql.append("AND d.published_at >= ?::date "); params.add(fromDate); }
         if (notEmpty(toDate))     { sql.append("AND d.published_at <  ?::date "); params.add(toDate); }
+        if (notEmpty(campaign))   { sql.append("AND d.campaign = ? ");            params.add(campaign); }
         sql.append("GROUP BY e.text, e.entity_type ORDER BY count DESC LIMIT ?");
         params.add(limit);
 
@@ -456,6 +464,7 @@ public class SentimentPlugin extends WebroPlugin {
                             @QueryParam("from")     String fromDate,
                             @QueryParam("to")       String toDate,
                             @QueryParam("bucket")   @DefaultValue("day") String bucket,
+                            @QueryParam("campaign") String campaign,
                             @Context HttpServletRequest req) {
         String orgId = ctx.orgContext(req).organizationId();
         if (!notEmpty(entitiesCsv)) return bad("entities query param required");
@@ -477,6 +486,7 @@ public class SentimentPlugin extends WebroPlugin {
             List<Object> params = new ArrayList<>(); params.add(orgId); params.add(entity);
             if (notEmpty(fromDate)) { sql.append("AND d.published_at >= ?::date "); params.add(fromDate); }
             if (notEmpty(toDate))   { sql.append("AND d.published_at <  ?::date "); params.add(toDate); }
+            if (notEmpty(campaign)) { sql.append("AND d.campaign = ? ");            params.add(campaign); }
             sql.append("GROUP BY ts ORDER BY ts ASC");
             series.put(entity, ctx.db().query(sql.toString(), params));
         }
@@ -487,9 +497,10 @@ public class SentimentPlugin extends WebroPlugin {
 
     @GET
     @Path("/cooccurrence")
-    public Response cooccurrence(@QueryParam("entity") String entity,
-                                 @QueryParam("from")   String fromDate,
-                                 @QueryParam("to")     String toDate,
+    public Response cooccurrence(@QueryParam("entity")   String entity,
+                                 @QueryParam("from")     String fromDate,
+                                 @QueryParam("to")       String toDate,
+                                 @QueryParam("campaign") String campaign,
                                  @QueryParam("limit")  @DefaultValue("30") int limit,
                                  @Context HttpServletRequest req) {
         String orgId = ctx.orgContext(req).organizationId();
@@ -506,6 +517,7 @@ public class SentimentPlugin extends WebroPlugin {
         List<Object> params = new ArrayList<>(); params.add(orgId); params.add(entity);
         if (notEmpty(fromDate)) { sql.append("AND d.published_at >= ?::date "); params.add(fromDate); }
         if (notEmpty(toDate))   { sql.append("AND d.published_at <  ?::date "); params.add(toDate); }
+        if (notEmpty(campaign)) { sql.append("AND d.campaign = ? ");            params.add(campaign); }
         sql.append("GROUP BY e2.text, e2.entity_type ORDER BY count DESC LIMIT ?");
         params.add(limit);
 
@@ -521,6 +533,7 @@ public class SentimentPlugin extends WebroPlugin {
                               @QueryParam("entity")      String entity,
                               @QueryParam("from")        String fromDate,
                               @QueryParam("to")          String toDate,
+                              @QueryParam("campaign")    String campaign,
                               @QueryParam("limit")       @DefaultValue("100") int limit,
                               @Context HttpServletRequest req) {
         String orgId = ctx.orgContext(req).organizationId();
@@ -545,6 +558,7 @@ public class SentimentPlugin extends WebroPlugin {
         if (notEmpty(label))      { sql.append("AND d.label = ? ");              params.add(label); }
         if (notEmpty(fromDate))   { sql.append("AND d.published_at >= ?::date "); params.add(fromDate); }
         if (notEmpty(toDate))     { sql.append("AND d.published_at <  ?::date "); params.add(toDate); }
+        if (notEmpty(campaign))   { sql.append("AND d.campaign = ? ");            params.add(campaign); }
         sql.append("ORDER BY d.published_at DESC NULLS LAST, d.analyzed_at DESC LIMIT ?");
         params.add(limit);
 
@@ -559,6 +573,7 @@ public class SentimentPlugin extends WebroPlugin {
         String sourceUrl   = body.get("source_url")   != null ? String.valueOf(body.get("source_url"))   : null;
         String author      = body.get("author")       != null ? String.valueOf(body.get("author"))       : null;
         String externalId  = body.get("external_id")  != null ? String.valueOf(body.get("external_id"))  : null;
+        String campaign    = emptyToNull(body.get("campaign") != null ? String.valueOf(body.get("campaign")) : null);
         String textHash    = SentimentLlmPrompt.sha256(text);
         // The LLM output goes into a jsonb column. Claude (via the OAuth subscription) often wraps the
         // JSON object in ```json fences or surrounding prose, so the RAW string is not valid JSON and the
@@ -571,15 +586,16 @@ public class SentimentPlugin extends WebroPlugin {
             "INSERT INTO sentiment_documents " +
             " (org_id, source_type, source_url, author, external_id, " +
             "  published_at, analyzed_at, text_hash, text_snippet, language, " +
-            "  label, polarity, confidence, model_used, raw_response) " +
-            "VALUES (?, ?, ?, ?, ?, ?::timestamptz, NOW(), ?, ?, ?, ?, ?, ?, ?, ?::jsonb) " +
+            "  label, polarity, confidence, model_used, raw_response, campaign) " +
+            "VALUES (?, ?, ?, ?, ?, ?::timestamptz, NOW(), ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?) " +
             "ON CONFLICT (org_id, text_hash, source_type) DO UPDATE SET " +
             "  analyzed_at = NOW(), label = EXCLUDED.label, polarity = EXCLUDED.polarity, " +
-            "  confidence = EXCLUDED.confidence, raw_response = EXCLUDED.raw_response",
+            "  confidence = EXCLUDED.confidence, raw_response = EXCLUDED.raw_response, " +
+            "  campaign = COALESCE(EXCLUDED.campaign, sentiment_documents.campaign)",
             Arrays.asList(orgId, sourceType, sourceUrl, author, externalId, publishedAt,
                 textHash, text.substring(0, Math.min(1000, text.length())),
                 parsed.get("language"), parsed.get("label"), parsed.get("polarity"),
-                parsed.get("confidence"), "default", rawJson)
+                parsed.get("confidence"), "default", rawJson, campaign)
         );
         // Note: emotions/entities/aspects child rows are NOT persisted from this thin API path.
         // Use the ETL pipeline (sentiment_analyze + sentiment_save) for full enrichment.
@@ -638,6 +654,8 @@ public class SentimentPlugin extends WebroPlugin {
     }
 
     private static boolean notEmpty(String s) { return s != null && !s.isEmpty(); }
+
+    private static String emptyToNull(String s) { return (s == null || s.trim().isEmpty()) ? null : s.trim(); }
 
     private static Response bad(String msg) {
         return Response.status(400).entity(Map.of("error", msg)).build();

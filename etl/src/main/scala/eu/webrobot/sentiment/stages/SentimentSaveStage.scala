@@ -30,6 +30,14 @@ class SentimentSaveStage extends WSinkStage {
     val sourceUrlField    = args.string(3, "source_url")
     val authorField       = args.string(4, "author")
     val externalIdField   = args.string(5, "external_id")
+    // arg 6 = campaign token (LITERAL, like source_type) — scopes this run's docs for the
+    // per-run/per-topic charts. Empty = unscoped (legacy). A job-level SparkConf override wins
+    // when present (so the platform can stamp it even if the pipeline omits the arg).
+    val campaign          = {
+      val fromConf = scala.util.Try(ctx.config("webrobot.campaign")).toOption
+        .flatMap(Option(_)).map(_.trim).getOrElse("")
+      if (fromConf.nonEmpty) fromConf else args.string(6, "").trim
+    }
 
     val orgId = ctx.config("webrobot.org.id")
     val text  = row.str(textField).getOrElse("").trim
@@ -63,8 +71,8 @@ class SentimentSaveStage extends WSinkStage {
         """INSERT INTO sentiment_documents
           |  (org_id, source_type, source_url, author, external_id,
           |   published_at, analyzed_at, text_hash, text_snippet, language,
-          |   label, polarity, confidence, model_used, raw_response)
-          |VALUES (?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?::jsonb)
+          |   label, polarity, confidence, model_used, raw_response, campaign)
+          |VALUES (?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?)
           |ON CONFLICT (org_id, text_hash, source_type)
           |DO UPDATE SET
           |  published_at = COALESCE(EXCLUDED.published_at, sentiment_documents.published_at),
@@ -75,7 +83,8 @@ class SentimentSaveStage extends WSinkStage {
           |  polarity     = EXCLUDED.polarity,
           |  confidence   = EXCLUDED.confidence,
           |  model_used   = EXCLUDED.model_used,
-          |  raw_response = EXCLUDED.raw_response
+          |  raw_response = EXCLUDED.raw_response,
+          |  campaign     = COALESCE(EXCLUDED.campaign, sentiment_documents.campaign)
           |RETURNING id""".stripMargin
       )
       upsertDoc.setString(1, orgId)
@@ -95,6 +104,7 @@ class SentimentSaveStage extends WSinkStage {
       if (confidence == null) upsertDoc.setNull(12, java.sql.Types.DOUBLE) else upsertDoc.setDouble(12, confidence)
       upsertDoc.setString(13, modelUsed)
       upsertDoc.setString(14, if (rawResponse.isEmpty) "{}" else rawResponse)
+      upsertDoc.setString(15, nullIfEmpty(campaign))
 
       val rs = upsertDoc.executeQuery()
       if (!rs.next()) throw new RuntimeException(s"[$name] insert returned no id")
