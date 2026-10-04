@@ -87,10 +87,14 @@ object SentimentLlm {
           case _ => Seq.empty
         }
 
-        SentimentEnrichment(polarity, label, confidence, language, emotionsMap, entities, aspects, raw)
+        // rawJson is persisted into a jsonb column (sentiment_documents.raw_response) and re-parsed by
+        // the reconciler. The ORIGINAL LLM payload is often fence/prose-wrapped (esp. Claude), so it is
+        // NOT valid JSON → "invalid input syntax for type json" on the ::jsonb cast. Store the parsed
+        // object RE-SERIALIZED (always valid; still carries emotions/entities/aspects for reconcile).
+        SentimentEnrichment(polarity, label, confidence, language, emotionsMap, entities, aspects, JsonMini.stringify(m))
 
       case None =>
-        SentimentEnrichment(0.0, "neutral", 0.0, "", Emotions.map(_ -> 0.0).toMap, Seq.empty, Seq.empty, raw)
+        SentimentEnrichment(0.0, "neutral", 0.0, "", Emotions.map(_ -> 0.0).toMap, Seq.empty, Seq.empty, "{}")
     }
   }
 
