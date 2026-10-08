@@ -34,7 +34,12 @@ class SentimentAnalyzeStage extends WPartitionStage {
     val maxChars  = args.int(2, 4000)
 
     rows.map { row =>
-      val rawText = row.str(textField).getOrElse("").trim
+      // Null-safe read: WRow.str does `fields.get(name).map(_.toString)`, which NPEs when the
+      // column is present but holds a null value (Some(null)) — this happens on empty/overshot
+      // paginated pages or browser-rendered posts whose body selector matched nothing. Read via
+      // get + Option(_) so Some(null) collapses to None → neutral defaults instead of aborting
+      // the whole Spark job.
+      val rawText = row.get(textField).flatMap(v => Option(v)).map(_.toString).getOrElse("").trim
       if (rawText.isEmpty) {
         ctx.warn(s"[$name] empty text in field '$textField' — emitting neutral defaults")
         emitNeutral(row, model)

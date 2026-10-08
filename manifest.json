@@ -1,6 +1,6 @@
 {
   "pluginId": "sentimental-plugin",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "displayName": "Sentiment Analysis Plugin",
   "description": "LLM-powered rich sentiment analysis: polarity + Plutchik 8-emotion vector + named entities + aspect-based per-entity sentiment. ETL stages for batch enrichment, REST API for chart-ready queries and agent integration.",
   "license": "proprietary",
@@ -25,7 +25,7 @@
     {
       "type": "etl",
       "subId": "sentimental-plugin-etl",
-      "jar": "etl/etl-0.2.0.jar",
+      "jar": "etl/etl-0.2.1.jar",
       "manifest": "etl/manifest.json"
     },
     {
